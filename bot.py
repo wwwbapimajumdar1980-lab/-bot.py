@@ -2,9 +2,17 @@ import os
 import sqlite3
 import secrets
 import logging
-from datetime import datetime
+import threading
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from datetime import datetime
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
+
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -14,23 +22,74 @@ from telegram.ext import (
     filters,
 )
 
+
 # ============================================================
 # CONFIG
 # ============================================================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "PASTE_NEW_BOT_TOKEN_HERE")
+# Render Environment Variable থেকে token নেবে
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 
-# তোমার Admin Chat ID
+# তোমার Telegram Admin ID
 ADMIN_ID = 1393373043
 
+# SQLite database
 DB_NAME = "alpha_apk.db"
+
+# Render automatically PORT দেয়
+PORT = int(os.getenv("PORT", "10000"))
+
+
+# ============================================================
+# LOGGING
+# ============================================================
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    level=logging.INFO,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# RENDER HEALTH SERVER
+# ============================================================
+
+class HealthHandler(BaseHTTPRequestHandler):
+
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"Alpha APK Bot is running!")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+
+    def log_message(self, format, *args):
+        return
+
+
+def run_health_server():
+    try:
+        server = HTTPServer(
+            ("0.0.0.0", PORT),
+            HealthHandler
+        )
+
+        logger.info("Health server started on port %s", PORT)
+
+        server.serve_forever()
+
+    except Exception as e:
+        logger.error(
+            "Health server error: %s",
+            e,
+            exc_info=True
+        )
 
 
 # ============================================================
@@ -38,10 +97,16 @@ logger = logging.getLogger(__name__)
 # ============================================================
 
 def db():
-    return sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(
+        DB_NAME,
+        timeout=30
+    )
+
+    return conn
 
 
 def init_db():
+
     conn = db()
     cur = conn.cursor()
 
@@ -62,7 +127,17 @@ def init_db():
     conn.close()
 
 
-def add_media(media_type, file_id, file_name="", caption=""):
+# ============================================================
+# ADD MEDIA
+# ============================================================
+
+def add_media(
+    media_type,
+    file_id,
+    file_name="",
+    caption=""
+):
+
     token = secrets.token_urlsafe(8)
 
     conn = db()
@@ -70,7 +145,14 @@ def add_media(media_type, file_id, file_name="", caption=""):
 
     cur.execute("""
         INSERT INTO media
-        (token, media_type, file_id, file_name, caption, created_at)
+        (
+            token,
+            media_type,
+            file_id,
+            file_name,
+            caption,
+            created_at
+        )
         VALUES (?, ?, ?, ?, ?, ?)
     """, (
         token,
@@ -78,7 +160,9 @@ def add_media(media_type, file_id, file_name="", caption=""):
         file_id,
         file_name,
         caption,
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
     ))
 
     conn.commit()
@@ -87,13 +171,25 @@ def add_media(media_type, file_id, file_name="", caption=""):
     return token
 
 
+# ============================================================
+# GET MEDIA
+# ============================================================
+
 def get_media(token):
+
     conn = db()
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT id, token, media_type, file_id, file_name,
-               caption, created_at, views
+        SELECT
+            id,
+            token,
+            media_type,
+            file_id,
+            file_name,
+            caption,
+            created_at,
+            views
         FROM media
         WHERE token = ?
     """, (token,))
@@ -105,33 +201,61 @@ def get_media(token):
     return row
 
 
+# ============================================================
+# GET ALL MEDIA
+# ============================================================
+
 def get_all_media(media_type=None):
+
     conn = db()
     cur = conn.cursor()
 
     if media_type:
+
         cur.execute("""
-            SELECT id, token, media_type, file_id,
-                   file_name, caption, created_at, views
+            SELECT
+                id,
+                token,
+                media_type,
+                file_id,
+                file_name,
+                caption,
+                created_at,
+                views
             FROM media
             WHERE media_type = ?
             ORDER BY id DESC
         """, (media_type,))
+
     else:
+
         cur.execute("""
-            SELECT id, token, media_type, file_id,
-                   file_name, caption, created_at, views
+            SELECT
+                id,
+                token,
+                media_type,
+                file_id,
+                file_name,
+                caption,
+                created_at,
+                views
             FROM media
             ORDER BY id DESC
         """)
 
     rows = cur.fetchall()
+
     conn.close()
 
     return rows
 
 
+# ============================================================
+# DELETE MEDIA
+# ============================================================
+
 def delete_media(media_id):
+
     conn = db()
     cur = conn.cursor()
 
@@ -144,7 +268,15 @@ def delete_media(media_id):
     conn.close()
 
 
-def rename_media(media_id, new_name):
+# ============================================================
+# RENAME MEDIA
+# ============================================================
+
+def rename_media(
+    media_id,
+    new_name
+):
+
     conn = db()
     cur = conn.cursor()
 
@@ -152,13 +284,21 @@ def rename_media(media_id, new_name):
         UPDATE media
         SET file_name = ?
         WHERE id = ?
-    """, (new_name, media_id))
+    """, (
+        new_name,
+        media_id
+    ))
 
     conn.commit()
     conn.close()
 
 
+# ============================================================
+# INCREASE VIEWS
+# ============================================================
+
 def increase_views(token):
+
     conn = db()
     cur = conn.cursor()
 
@@ -177,116 +317,17 @@ def increase_views(token):
 # ============================================================
 
 def is_admin(user_id):
+
     return user_id == ADMIN_ID
 
 
 # ============================================================
-# START
+# ADMIN KEYBOARD
 # ============================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def admin_keyboard():
 
-    user = update.effective_user
-
-    args = context.args
-
-    # --------------------------------------------------------
-    # DEEP LINK
-    # --------------------------------------------------------
-
-    if args:
-
-        token = args[0]
-
-        item = get_media(token)
-
-        if not item:
-            await update.message.reply_text(
-                "❌ এই media link আর available নেই।"
-            )
-            return
-
-        media_id, token, media_type, file_id, file_name, caption, created_at, views = item
-
-        increase_views(token)
-
-        try:
-
-            if media_type == "apk":
-
-                await update.message.reply_document(
-                    document=file_id,
-                    caption=caption or f"📦 {file_name or 'APK'}"
-                )
-
-            elif media_type == "video":
-
-                await update.message.reply_video(
-                    video=file_id,
-                    caption=caption or f"🎬 {file_name or 'Video'}"
-                )
-
-            elif media_type == "photo":
-
-                await update.message.reply_photo(
-                    photo=file_id,
-                    caption=caption or f"🖼️ {file_name or 'Photo'}"
-                )
-
-        except Exception as e:
-
-            logger.error("Sending media failed: %s", e)
-
-            await update.message.reply_text(
-                "❌ Media পাঠানো যায়নি। পরে আবার চেষ্টা করুন।"
-            )
-
-        return
-
-    # --------------------------------------------------------
-    # NORMAL START
-    # --------------------------------------------------------
-
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                "📦 APK",
-                callback_data="user_apk"
-            ),
-            InlineKeyboardButton(
-                "🎥 Video",
-                callback_data="user_video"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🖼️ Photo",
-                callback_data="user_photo"
-            )
-        ]
-    ]
-
-    await update.message.reply_text(
-        "👋 Welcome to Alpha APK Bot!\n\n"
-        "তোমার কাছে কোনো media link থাকলে সেটাতে click করলেই "
-        "আমি automatically সেই file পাঠিয়ে দেব।",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-
-
-# ============================================================
-# ADMIN PANEL
-# ============================================================
-
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text(
-            "❌ Access denied."
-        )
-        return
-
-    keyboard = [
+    return InlineKeyboardMarkup([
 
         [
             InlineKeyboardButton(
@@ -302,7 +343,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ),
 
             InlineKeyboardButton(
-                "🎥 Manage Video",
+                "🎬 Manage Video",
                 callback_data="manage_video"
             )
         ],
@@ -321,13 +362,171 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         ]
 
+    ])
+
+
+# ============================================================
+# START
+# ============================================================
+
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    user = update.effective_user
+
+    args = context.args
+
+    # --------------------------------------------------------
+    # DEEP LINK
+    # --------------------------------------------------------
+
+    if args:
+
+        token = args[0]
+
+        item = get_media(token)
+
+        if not item:
+
+            await update.message.reply_text(
+                "❌ Media link is not available."
+            )
+
+            return
+
+        (
+            media_id,
+            token,
+            media_type,
+            file_id,
+            file_name,
+            caption,
+            created_at,
+            views
+        ) = item
+
+        increase_views(token)
+
+        try:
+
+            if media_type == "apk":
+
+                await update.message.reply_document(
+                    document=file_id,
+                    caption=(
+                        caption
+                        or f"📦 {file_name or 'APK'}"
+                    )
+                )
+
+            elif media_type == "video":
+
+                await update.message.reply_video(
+                    video=file_id,
+                    caption=(
+                        caption
+                        or f"🎬 {file_name or 'Video'}"
+                    )
+                )
+
+            elif media_type == "photo":
+
+                await update.message.reply_photo(
+                    photo=file_id,
+                    caption=(
+                        caption
+                        or f"🖼️ {file_name or 'Photo'}"
+                    )
+                )
+
+        except Exception as e:
+
+            logger.error(
+                "Sending media failed: %s",
+                e,
+                exc_info=True
+            )
+
+            await update.message.reply_text(
+                "❌ Media send failed. "
+                "Please contact admin."
+            )
+
+        return
+
+    # --------------------------------------------------------
+    # NORMAL START
+    # --------------------------------------------------------
+
+    keyboard = [
+
+        [
+            InlineKeyboardButton(
+                "📦 APK",
+                callback_data="user_apk"
+            ),
+
+            InlineKeyboardButton(
+                "🎬 Video",
+                callback_data="user_video"
+            )
+        ],
+
+        [
+            InlineKeyboardButton(
+                "🖼️ Photo",
+                callback_data="user_photo"
+            )
+        ]
+
     ]
 
     await update.message.reply_text(
-        "🔐 **Alpha APK — Admin Control Center**\n\n"
-        "নিচের menu থেকে control করো:",
-        parse_mode="Markdown",
+
+        "👋 Welcome to Alpha APK Bot!\n\n"
+        "Select a category below to browse "
+        "available media.",
+
         reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+# ============================================================
+# ADMIN PANEL
+# ============================================================
+
+async def admin_panel(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not is_admin(
+        update.effective_user.id
+    ):
+
+        await update.message.reply_text(
+            "❌ Access denied."
+        )
+
+        return
+
+    # Clear previous states
+    context.user_data.pop(
+        "adding_media",
+        None
+    )
+
+    context.user_data.pop(
+        "rename_media_id",
+        None
+    )
+
+    await update.message.reply_text(
+        "🔐 Alpha APK — Admin Control Center\n\n"
+        "Choose an option below:",
+        reply_markup=admin_keyboard()
     )
 
 
@@ -335,33 +534,45 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # CALLBACK HANDLER
 # ============================================================
 
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def callback_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     query = update.callback_query
 
-    await query.answer()
+    data = query.data
 
     user_id = query.from_user.id
 
-    data = query.data
-
     # ========================================================
-    # ADMIN
+    # ADMIN CALLBACK PROTECTION
     # ========================================================
 
-    if data.startswith("admin_") or \
-       data.startswith("manage_") or \
-       data.startswith("media_") or \
-       data in ["stats", "back_admin"]:
+    admin_callbacks = (
+        "admin_",
+        "manage_",
+        "media_",
+        "rename_",
+        "link_",
+        "delete_",
+        "confirm_delete_",
+        "back_",
+        "stats"
+    )
+
+    if data.startswith(admin_callbacks):
 
         if not is_admin(user_id):
 
             await query.answer(
-                "Access denied",
+                "Access denied.",
                 show_alert=True
             )
 
             return
+
+    await query.answer()
 
     # ========================================================
     # ADD MEDIA
@@ -371,25 +582,29 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data["adding_media"] = True
 
-        keyboard = [
-            [
-                InlineKeyboardButton(
-                    "❌ Cancel",
-                    callback_data="cancel_add"
-                )
-            ]
-        ]
+        keyboard = [[
+            InlineKeyboardButton(
+                "❌ Cancel",
+                callback_data="cancel_add"
+            )
+        ]]
 
         await query.edit_message_text(
-            "➕ **Add Media Mode**\n\n"
-            "এখন আমাকে APK / Video / Photo পাঠাও।\n\n"
-            "📦 APK → Document হিসেবে পাঠাও\n"
-            "🎥 Video → Video হিসেবে পাঠাও\n"
-            "🖼️ Photo → Photo হিসেবে পাঠাও\n\n"
-            "File পাওয়ার পর আমি automatically database-এ save "
-            "করব এবং unique link দেব।",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+
+            "➕ Add Media Mode\n\n"
+
+            "Send one of the following:\n\n"
+            "📦 APK → Send as Document\n"
+            "🎬 Video → Send as Video\n"
+            "🖼️ Photo → Send as Photo\n\n"
+
+            "The bot will automatically save the "
+            "Telegram file_id and create a unique "
+            "download link.",
+
+            reply_markup=InlineKeyboardMarkup(
+                keyboard
+            )
         )
 
         return
@@ -403,7 +618,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["adding_media"] = False
 
         await query.edit_message_text(
-            "❌ Add Media cancelled."
+            "❌ Add Media cancelled.",
+            reply_markup=admin_keyboard()
         )
 
         return
@@ -412,16 +628,38 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # MANAGE LIST
     # ========================================================
 
-    if data in ["manage_apk", "manage_video", "manage_photo"]:
+    if data in (
+        "manage_apk",
+        "manage_video",
+        "manage_photo"
+    ):
 
-        media_type = data.replace("manage_", "")
+        media_type = data.replace(
+            "manage_",
+            ""
+        )
 
-        rows = get_all_media(media_type)
+        rows = get_all_media(
+            media_type
+        )
 
         if not rows:
 
             await query.edit_message_text(
-                f"📭 কোনো {media_type.upper()} পাওয়া যায়নি।"
+
+                f"📭 No {media_type.upper()} "
+                "found.",
+
+                reply_markup=InlineKeyboardMarkup([
+
+                    [
+                        InlineKeyboardButton(
+                            "⬅️ Admin Panel",
+                            callback_data="back_admin"
+                        )
+                    ]
+
+                ])
             )
 
             return
@@ -431,30 +669,42 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for row in rows:
 
             media_id = row[0]
-            name = row[4] or f"{media_type.upper()} #{media_id}"
+
+            name = (
+                row[4]
+                or f"{media_type.upper()} #{media_id}"
+            )
 
             if len(name) > 30:
+
                 name = name[:27] + "..."
 
             keyboard.append([
+
                 InlineKeyboardButton(
-                    f"📁 {name}",
+                    f"📄 {name}",
                     callback_data=f"media_{media_id}"
                 )
+
             ])
 
         keyboard.append([
+
             InlineKeyboardButton(
                 "⬅️ Admin Panel",
                 callback_data="back_admin"
             )
+
         ])
 
         await query.edit_message_text(
-            f"📂 **Manage {media_type.upper()}**\n\n"
+
+            f"📁 Manage {media_type.upper()}\n\n"
             f"Total: {len(rows)}",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+
+            reply_markup=InlineKeyboardMarkup(
+                keyboard
+            )
         )
 
         return
@@ -465,14 +715,23 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("media_"):
 
-        media_id = int(data.split("_")[1])
+        media_id = int(
+            data.split("_")[1]
+        )
 
         conn = db()
         cur = conn.cursor()
 
         cur.execute("""
-            SELECT id, token, media_type, file_id,
-                   file_name, caption, created_at, views
+            SELECT
+                id,
+                token,
+                media_type,
+                file_id,
+                file_name,
+                caption,
+                created_at,
+                views
             FROM media
             WHERE id = ?
         """, (media_id,))
@@ -489,11 +748,24 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             return
 
-        media_id, token, media_type, file_id, file_name, caption, created_at, views = row
+        (
+            media_id,
+            token,
+            media_type,
+            file_id,
+            file_name,
+            caption,
+            created_at,
+            views
+        ) = row
 
         bot_username = context.bot.username
 
-        link = f"https://t.me/{bot_username}?start={token}"
+        link = (
+            f"https://t.me/"
+            f"{bot_username}"
+            f"?start={token}"
+        )
 
         keyboard = [
 
@@ -528,15 +800,23 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
 
         await query.edit_message_text(
-            f"📁 **Media Details**\n\n"
+
+            "📄 Media Details\n\n"
+
             f"🆔 ID: `{media_id}`\n"
-            f"📂 Type: `{media_type}`\n"
-            f"📛 Name: `{file_name or 'Not set'}`\n"
+            f"📁 Type: `{media_type}`\n"
+            f"📝 Name: `{file_name or 'Not set'}`\n"
             f"👁️ Requests: `{views}`\n"
             f"📅 Added: `{created_at}`\n\n"
-            f"🔗 Link:\n`{link}`",
+
+            "🔗 Link:\n"
+            f"`{link}`",
+
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+
+            reply_markup=InlineKeyboardMarkup(
+                keyboard
+            )
         )
 
         return
@@ -547,13 +827,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("link_"):
 
-        media_id = int(data.split("_")[1])
+        media_id = int(
+            data.split("_")[1]
+        )
 
         conn = db()
         cur = conn.cursor()
 
         cur.execute(
-            "SELECT token, file_name FROM media WHERE id = ?",
+            """
+            SELECT token, file_name
+            FROM media
+            WHERE id = ?
+            """,
             (media_id,)
         )
 
@@ -562,19 +848,33 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
 
         if not row:
+
+            await query.message.reply_text(
+                "❌ Media not found."
+            )
+
             return
 
         token, file_name = row
 
         bot_username = context.bot.username
 
-        link = f"https://t.me/{bot_username}?start={token}"
+        link = (
+            f"https://t.me/"
+            f"{bot_username}"
+            f"?start={token}"
+        )
 
         await query.message.reply_text(
-            f"🔗 **Media Link**\n\n"
-            f"📛 {file_name or 'Media'}\n\n"
+
+            "🔗 Media Link\n\n"
+
+            f"📄 {file_name or 'Media'}\n\n"
+
             f"{link}\n\n"
-            f"এই link যেকোনো জায়গায় share করতে পারো।",
+
+            "Share this link with users.",
+
             parse_mode="Markdown"
         )
 
@@ -586,14 +886,18 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("delete_"):
 
-        media_id = int(data.split("_")[1])
+        media_id = int(
+            data.split("_")[1]
+        )
 
         keyboard = [
 
             [
                 InlineKeyboardButton(
                     "✅ Yes, Delete",
-                    callback_data=f"confirm_delete_{media_id}"
+                    callback_data=(
+                        f"confirm_delete_{media_id}"
+                    )
                 )
             ],
 
@@ -607,8 +911,13 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
 
         await query.edit_message_text(
-            "⚠️ তুমি কি সত্যিই এই media delete করতে চাও?",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+
+            "⚠️ Are you sure you want to "
+            "delete this media?",
+
+            reply_markup=InlineKeyboardMarkup(
+                keyboard
+            )
         )
 
         return
@@ -619,12 +928,17 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("confirm_delete_"):
 
-        media_id = int(data.split("_")[2])
+        media_id = int(
+            data.split("_")[2]
+        )
 
         delete_media(media_id)
 
         await query.edit_message_text(
-            "✅ Media successfully deleted."
+
+            "✅ Media successfully deleted.",
+
+            reply_markup=admin_keyboard()
         )
 
         return
@@ -635,14 +949,23 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("rename_"):
 
-        media_id = int(data.split("_")[1])
+        media_id = int(
+            data.split("_")[1]
+        )
 
-        context.user_data["rename_media_id"] = media_id
+        context.user_data[
+            "rename_media_id"
+        ] = media_id
 
         await query.edit_message_text(
-            "✏️ নতুন নাম পাঠাও।\n\n"
+
+            "✏️ Rename Media\n\n"
+
+            "Send the new name now.\n\n"
+
             "Example:\n"
             "`CapCut Premium APK`",
+
             parse_mode="Markdown"
         )
 
@@ -654,48 +977,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "back_admin":
 
-        keyboard = [
+        context.user_data.pop(
+            "adding_media",
+            None
+        )
 
-            [
-                InlineKeyboardButton(
-                    "➕ Add Media",
-                    callback_data="admin_add"
-                )
-            ],
-
-            [
-                InlineKeyboardButton(
-                    "📦 Manage APK",
-                    callback_data="manage_apk"
-                ),
-
-                InlineKeyboardButton(
-                    "🎥 Manage Video",
-                    callback_data="manage_video"
-                )
-            ],
-
-            [
-                InlineKeyboardButton(
-                    "🖼️ Manage Photo",
-                    callback_data="manage_photo"
-                )
-            ],
-
-            [
-                InlineKeyboardButton(
-                    "📊 Statistics",
-                    callback_data="stats"
-                )
-
-            ]
-
-        ]
+        context.user_data.pop(
+            "rename_media_id",
+            None
+        )
 
         await query.edit_message_text(
-            "🔐 **Alpha APK — Admin Panel**",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+
+            "🔐 Alpha APK — Admin Panel\n\n"
+            "Choose an option below:",
+
+            reply_markup=admin_keyboard()
         )
 
         return
@@ -706,9 +1003,14 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("back_"):
 
-        media_type = data.replace("back_", "")
+        media_type = data.replace(
+            "back_",
+            ""
+        )
 
-        rows = get_all_media(media_type)
+        rows = get_all_media(
+            media_type
+        )
 
         keyboard = []
 
@@ -716,25 +1018,36 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             media_id = row[0]
 
-            name = row[4] or f"{media_type.upper()} #{media_id}"
+            name = (
+                row[4]
+                or f"{media_type.upper()} #{media_id}"
+            )
 
             keyboard.append([
+
                 InlineKeyboardButton(
-                    f"📁 {name[:30]}",
+                    f"📄 {name[:30]}",
                     callback_data=f"media_{media_id}"
                 )
+
             ])
 
         keyboard.append([
+
             InlineKeyboardButton(
                 "⬅️ Admin Panel",
                 callback_data="back_admin"
             )
+
         ])
 
         await query.edit_message_text(
-            f"📂 Manage {media_type.upper()}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+
+            f"📁 Manage {media_type.upper()}",
+
+            reply_markup=InlineKeyboardMarkup(
+                keyboard
+            )
         )
 
         return
@@ -745,14 +1058,22 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("user_"):
 
-        media_type = data.replace("user_", "")
+        media_type = data.replace(
+            "user_",
+            ""
+        )
 
-        rows = get_all_media(media_type)
+        rows = get_all_media(
+            media_type
+        )
 
         if not rows:
 
             await query.edit_message_text(
-                "📭 এই category-তে এখন কোনো media নেই।"
+
+                "📭 No media available "
+                "in this category.",
+
             )
 
             return
@@ -762,21 +1083,85 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for row in rows:
 
             media_id = row[0]
-            token = row[1]
-            name = row[4] or f"{media_type.upper()} #{media_id}"
 
-            link = f"https://t.me/{context.bot.username}?start={token}"
+            token = row[1]
+
+            name = (
+                row[4]
+                or f"{media_type.upper()} #{media_id}"
+            )
+
+            link = (
+                f"https://t.me/"
+                f"{context.bot.username}"
+                f"?start={token}"
+            )
 
             keyboard.append([
+
                 InlineKeyboardButton(
-                    f"📁 {name[:25]}",
+                    f"📄 {name[:25]}",
                     url=link
                 )
+
             ])
 
+        keyboard.append([
+
+            InlineKeyboardButton(
+                "⬅️ Back",
+                callback_data="user_back"
+            )
+
+        ])
+
         await query.edit_message_text(
-            f"📂 Available {media_type.upper()}",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+
+            f"📁 Available {media_type.upper()}",
+
+            reply_markup=InlineKeyboardMarkup(
+                keyboard
+            )
+        )
+
+        return
+
+    # ========================================================
+    # USER BACK
+    # ========================================================
+
+    if data == "user_back":
+
+        keyboard = [
+
+            [
+                InlineKeyboardButton(
+                    "📦 APK",
+                    callback_data="user_apk"
+                ),
+
+                InlineKeyboardButton(
+                    "🎬 Video",
+                    callback_data="user_video"
+                )
+            ],
+
+            [
+                InlineKeyboardButton(
+                    "🖼️ Photo",
+                    callback_data="user_photo"
+                )
+            ]
+
+        ]
+
+        await query.edit_message_text(
+
+            "👋 Select a category:",
+
+            reply_markup=InlineKeyboardMarkup(
+                keyboard
+            )
         )
 
         return
@@ -789,27 +1174,46 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         all_rows = get_all_media()
 
-        apk = len([x for x in all_rows if x[2] == "apk"])
-        video = len([x for x in all_rows if x[2] == "video"])
-        photo = len([x for x in all_rows if x[2] == "photo"])
+        apk = sum(
+            1 for x in all_rows
+            if x[2] == "apk"
+        )
 
-        total_views = sum(x[7] for x in all_rows)
+        video = sum(
+            1 for x in all_rows
+            if x[2] == "video"
+        )
+
+        photo = sum(
+            1 for x in all_rows
+            if x[2] == "photo"
+        )
+
+        total_views = sum(
+            x[7] for x in all_rows
+        )
 
         await query.edit_message_text(
-            "📊 **Alpha APK Statistics**\n\n"
+
+            "📊 Alpha APK Statistics\n\n"
+
             f"📦 APK: `{apk}`\n"
-            f"🎥 Video: `{video}`\n"
+            f"🎬 Video: `{video}`\n"
             f"🖼️ Photo: `{photo}`\n"
             f"📁 Total Media: `{len(all_rows)}`\n"
             f"👁️ Total Requests: `{total_views}`",
+
             parse_mode="Markdown",
+
             reply_markup=InlineKeyboardMarkup([
+
                 [
                     InlineKeyboardButton(
                         "⬅️ Back",
                         callback_data="back_admin"
                     )
                 ]
+
             ])
         )
 
@@ -820,12 +1224,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # MEDIA UPLOAD HANDLER
 # ============================================================
 
-async def media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def media_upload(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
-    if not is_admin(update.effective_user.id):
+    if not is_admin(
+        update.effective_user.id
+    ):
+
         return
 
-    if not context.user_data.get("adding_media"):
+    if not context.user_data.get(
+        "adding_media"
+    ):
+
         return
 
     media_type = None
@@ -842,17 +1255,12 @@ async def media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         file_id = document.file_id
 
-        file_name = document.file_name or "APK"
+        file_name = (
+            document.file_name
+            or "APK"
+        )
 
-        # APK detection
-        if file_name.lower().endswith(".apk"):
-
-            media_type = "apk"
-
-        else:
-
-            # Document হলেও APK হিসেবে save করা যাবে
-            media_type = "apk"
+        media_type = "apk"
 
     # --------------------------------------------------------
     # VIDEO
@@ -885,33 +1293,62 @@ async def media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
 
         await update.message.reply_text(
-            "❌ Please APK, Video অথবা Photo পাঠাও।"
+
+            "❌ Please send an APK/document, "
+            "video or photo."
+
         )
 
         return
 
-    caption = update.message.caption or ""
-
-    token = add_media(
-        media_type,
-        file_id,
-        file_name,
-        caption
+    caption = (
+        update.message.caption
+        or ""
     )
 
-    context.user_data["adding_media"] = False
+    try:
 
-    link = f"https://t.me/{context.bot.username}?start={token}"
+        token = add_media(
+
+            media_type,
+            file_id,
+            file_name,
+            caption
+
+        )
+
+    except sqlite3.IntegrityError:
+
+        await update.message.reply_text(
+            "❌ Could not save media. "
+            "Please try again."
+        )
+
+        return
+
+    context.user_data[
+        "adding_media"
+    ] = False
+
+    link = (
+        f"https://t.me/"
+        f"{context.bot.username}"
+        f"?start={token}"
+    )
 
     await update.message.reply_text(
-        "✅ **Media Successfully Added!**\n\n"
-        f"📂 Type: `{media_type}`\n"
-        f"📛 Name: `{file_name}`\n"
-        f"🆔 Token: `{token}`\n\n"
-        f"🔗 **Your Link:**\n"
+
+        "✅ Media Successfully Added!\n\n"
+
+        f"📁 Type: `{media_type}`\n"
+        f"📝 Name: `{file_name}`\n"
+        f"🔑 Token: `{token}`\n\n"
+
+        "🔗 Your Link:\n"
         f"`{link}`\n\n"
-        "এই link share করলে user bot-এ আসবে এবং "
-        "automatically এই media পেয়ে যাবে।",
+
+        "Share this link with users.",
+
         parse_mode="Markdown"
     )
 
@@ -920,19 +1357,35 @@ async def media_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # RENAME MESSAGE
 # ============================================================
 
-async def rename_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def rename_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
-    if not is_admin(update.effective_user.id):
+    if not is_admin(
+        update.effective_user.id
+    ):
+
         return
 
-    media_id = context.user_data.get("rename_media_id")
+    media_id = context.user_data.get(
+        "rename_media_id"
+    )
 
     if not media_id:
+
         return
 
-    new_name = update.message.text.strip()
+    if not update.message.text:
+
+        return
+
+    new_name = (
+        update.message.text.strip()
+    )
 
     if not new_name:
+
         return
 
     rename_media(
@@ -946,8 +1399,10 @@ async def rename_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     await update.message.reply_text(
-        f"✅ Name changed successfully!\n\n"
-        f"📛 New Name: {new_name}"
+
+        "✅ Name changed successfully!\n\n"
+        f"📝 New Name: {new_name}"
+
     )
 
 
@@ -955,7 +1410,10 @@ async def rename_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ERROR HANDLER
 # ============================================================
 
-async def error_handler(update, context):
+async def error_handler(
+    update,
+    context
+):
 
     logger.error(
         "Exception while handling update:",
@@ -969,17 +1427,43 @@ async def error_handler(update, context):
 
 def main():
 
-    if not BOT_TOKEN or BOT_TOKEN == "PASTE_NEW_BOT_TOKEN_HERE":
+    # --------------------------------------------------------
+    # TOKEN CHECK
+    # --------------------------------------------------------
+
+    if not BOT_TOKEN:
+
+        logger.error(
+            "BOT_TOKEN environment variable is missing!"
+        )
 
         print(
-            "\n❌ BOT_TOKEN পাওয়া যায়নি!\n"
-            "প্রথমে environment variable set করো:\n\n"
-            'export BOT_TOKEN="YOUR_NEW_BOT_TOKEN"\n'
+            "\n❌ BOT_TOKEN is missing!\n"
+            "Set BOT_TOKEN in Render Environment Variables.\n"
         )
 
         return
 
+    # --------------------------------------------------------
+    # DATABASE
+    # --------------------------------------------------------
+
     init_db()
+
+    # --------------------------------------------------------
+    # START HEALTH SERVER
+    # --------------------------------------------------------
+
+    health_thread = threading.Thread(
+        target=run_health_server,
+        daemon=True
+    )
+
+    health_thread.start()
+
+    # --------------------------------------------------------
+    # TELEGRAM APPLICATION
+    # --------------------------------------------------------
 
     application = (
         Application.builder()
@@ -987,52 +1471,88 @@ def main():
         .build()
     )
 
-    # Commands
+    # --------------------------------------------------------
+    # COMMANDS
+    # --------------------------------------------------------
+
     application.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start
+        )
     )
 
     application.add_handler(
-        CommandHandler("777", admin_panel)
+        CommandHandler(
+            "777",
+            admin_panel
+        )
     )
 
-    # Callback buttons
+    # --------------------------------------------------------
+    # CALLBACK BUTTONS
+    # --------------------------------------------------------
+
     application.add_handler(
-        CallbackQueryHandler(callback_handler)
+        CallbackQueryHandler(
+            callback_handler
+        )
     )
 
-    # Rename text
+    # --------------------------------------------------------
+    # MEDIA UPLOAD
+    # --------------------------------------------------------
+
     application.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            (
+                filters.Document.ALL
+                | filters.VIDEO
+                | filters.PHOTO
+            ),
+            media_upload
+        )
+    )
+
+    # --------------------------------------------------------
+    # TEXT / RENAME
+    # --------------------------------------------------------
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT
+            & ~filters.COMMAND,
             rename_handler
         )
     )
 
-    # Media uploads
-    application.add_handler(
-        MessageHandler(
-            filters.Document.ALL |
-            filters.VIDEO |
-            filters.PHOTO,
-            media_upload
-        )
-    )
+    # --------------------------------------------------------
+    # ERROR
+    # --------------------------------------------------------
 
     application.add_error_handler(
         error_handler
     )
 
+    # --------------------------------------------------------
+    # START
+    # --------------------------------------------------------
+
     print("====================================")
     print(" Alpha APK Bot Started")
     print(" Admin Command: /777")
     print(" Database:", DB_NAME)
+    print(" Health Port:", PORT)
     print("====================================")
 
     application.run_polling(
         allowed_updates=Update.ALL_TYPES
     )
 
+
+# ============================================================
+# RUN
+# ============================================================
 
 if __name__ == "__main__":
     main()
